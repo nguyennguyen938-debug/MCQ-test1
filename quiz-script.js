@@ -651,10 +651,28 @@ document.addEventListener('DOMContentLoaded', () => {
             `;
             
             try {
-                return await callGrok(prompt);
+                // Ưu tiên dùng Grok 3 vì khả năng tổng hợp tốt
+                if (GROK_TOKEN && GROK_TOKEN.startsWith('github_pat_')) {
+                    return await callGrok(prompt);
+                } else {
+                    throw new Error("Grok Token missing or invalid.");
+                }
             } catch (e) {
-                console.warn(`Chunk ${index + 1} failed. Skipping...`, e);
-                return { theory: "", exercises: [], mistakes: [] };
+                console.warn(`Chunk ${index + 1}: Grok 3 failed (${e.message}). Switching to Gemini Flash fallback...`);
+                try {
+                    // Fallback: Gemini 2.5 Flash
+                    // Sửa prompt một chút cho Gemini nếu cần, nhưng prompt hiện tại khá ổn
+                    const geminiRes = await callGeminiFlash(GEMINI_FLASH_KEY, prompt);
+                    return geminiRes;
+                } catch (geminiErr) {
+                    console.warn(`Chunk ${index + 1}: Gemini also failed (${geminiErr.message}). Using raw text fallback.`);
+                    // Fallback cuối cùng: Trả về raw text để Step 2 tự xử lý
+                    return { 
+                        theory: chunkText, 
+                        exercises: [], 
+                        mistakes: [] 
+                    };
+                }
             }
         };
 
@@ -668,11 +686,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
         results.forEach(res => {
             if (res) {
-                if (res.theory) mergedTheory += res.theory + "\n\n";
-                if (res.exercises && Array.isArray(res.exercises)) mergedExercises = mergedExercises.concat(res.exercises);
-                if (res.mistakes && Array.isArray(res.mistakes)) mergedMistakes = mergedMistakes.concat(res.mistakes);
+                // Xử lý cả trường hợp res là string (lỗi parse JSON nhưng có nội dung)
+                if (typeof res === 'string') {
+                    mergedTheory += res + "\n\n";
+                } else {
+                    if (res.theory) mergedTheory += res.theory + "\n\n";
+                    if (res.exercises && Array.isArray(res.exercises)) mergedExercises = mergedExercises.concat(res.exercises);
+                    if (res.mistakes && Array.isArray(res.mistakes)) mergedMistakes = mergedMistakes.concat(res.mistakes);
+                }
             }
         });
+
+        // Fallback: Nếu không trích xuất được gì, dùng toàn bộ text gốc
+        if (!mergedTheory.trim()) {
+            console.warn("Step 1 Warning: No theory extracted. Using original text as context.");
+            mergedTheory = text;
+        }
 
         return {
             theory: mergedTheory,
@@ -742,8 +771,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 // NORMAL MODE: Generate from scratch
                 prompt = `
                 Dựa vào kiến thức sau:
-                Lý thuyết: ${toSafeString(context.theory, 5000)}
-                Lỗi sai thường gặp: ${toSafeString(context.mistakes, 2000)}
+                Lý thuyết: ${toSafeString(context.theory, 200000)}
+                Lỗi sai thường gặp: ${toSafeString(context.mistakes, 10000)}
 
                 Hãy tạo ${requestCount} câu hỏi trắc nghiệm (${targetLang}) theo cấu trúc chuẩn:
                 - Phân bổ Bloom: ${bloomDist}.
@@ -1114,14 +1143,14 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    function toSafeString(val, maxLen = 2000) {
+    function toSafeString(val, maxLen = 200000) {
         let str = '';
         if (typeof val === 'string') str = val;
         else if (val === undefined || val === null) str = '';
         else str = JSON.stringify(val);
         if (str.length > maxLen) return str.slice(0, maxLen);
         return str;
-        }
+    }
  
     function renderQuiz(questions) {
         const lang = document.getElementById('output-language').value;
